@@ -13,15 +13,15 @@
                         "   tick: Exec by tick or by timer(true)\n"
                         "   close_loss: Close orders with loss(true)\n"
                         "   close_profit: Close orders with profit(false)\n"
-                        "   period: minutes(60)\n"
+                        "   period: timeframe, minutes(60)\n"
                         "   depth: number of the candles to find medial(22)"
 int             ext_magik = 11;
 extern double   ext_lot = 0.01;
 extern bool     ext_tick = true;
-extern bool     ext_close_loss = true;
+extern bool     ext_close_loss = false;
 extern bool     ext_close_profit = false;
 extern string   ext_period = (string)PERIOD_H1;
-extern int      ext_depth = 22;
+extern int      ext_depth = 33;
 class Lock {
     private:
         int magik;
@@ -81,7 +81,7 @@ class Lock {
                 sell_profit=0; sell_max_loss=0;
             }
         }
-        return true;
+    return true;
     }
 
     bool open_order(string operation, double price) {
@@ -120,7 +120,7 @@ class Lock {
 
     Lock(double my_lot, int my_depth, string my_period, int my_magik) {
         lot=my_lot;depth=my_depth;period=my_period;magik=my_magik;
-        Print("Get variables: res = ", get_medial()," ",get_orders());
+        Print("Lock init: ", get_medial()," ",get_orders());
         mdist = MarketInfo(Symbol(), MODE_SPREAD)*Point;
 
     }
@@ -133,7 +133,7 @@ Lock lock(ext_lot, ext_depth, ext_period, ext_magik);
 int OnInit()
   {
 //--- create timer
-    EventSetTimer(99);
+    EventSetTimer(33);
     my_comment();
 //---
    return(INIT_SUCCEEDED);
@@ -158,6 +158,7 @@ void OnTick()
             close_order();
             open_order();
         }
+        else my_err_zero();
     }
 }
 //+------------------------------------------------------------------+
@@ -166,12 +167,13 @@ void OnTick()
 void OnTimer()
 {
     if(ext_tick==false) {
-        Print("timer");
+        //Print("timer");
         my_comment();
         if(lock.get_medial() && lock.get_orders()) {
             close_order();
             open_order();
         }
+        else my_err_zero();
     }
     return;
 }
@@ -192,47 +194,60 @@ double OnTester()
 //+------------------------------------------------------------------+
 void close_order() {
     lock.get_orders();
-    if(ext_close_profit)
-    if(lock.buy_price < lock.ufrac-lock.medial)
+    if(ext_close_profit && lock.buy_profit > 0)
+    if(lock.buy_price < lock.ufrac-lock.medial && lock.ufrac > Ask+lock.mdist)
         lock.close_order("BUY");
-    if(ext_close_loss)
-    if(lock.buy_profit < 0 && lock.buy_price > Ask+lock.mdist)
+    if(ext_close_loss && lock.buy_profit < 0)
+    if(lock.sell_profit < 0 && lock.buy_profit > lock.sell_profit)
+    if(lock.buy_price > lock.ufrac+lock.medial && lock.ufrac > Ask+lock.mdist)
         lock.close_order("BUY");
-    if(lock.buy_profit == 0 && lock.buy_price > lock.ufrac+lock.medial)
-        lock.close_order("BUY");
+    if(lock.orders_buy == 0 && lock.orders_buy_stop > 0)
+        if(lock.ufrac > Ask+lock.medial && lock.buy_price > lock.ufrac+lock.medial)
+            lock.close_order("BUY");
     lock.get_orders();
-    if(ext_close_profit)
-    if(lock.sell_price > lock.lfrac+lock.medial)
+    if(ext_close_profit && lock.sell_profit > 0)
+    if(lock.sell_price > lock.lfrac+lock.medial && lock.lfrac < Bid-lock.mdist)
         lock.close_order("SELL");
-    if(ext_close_loss)
-    if(lock.sell_profit < 0 && lock.sell_price < Bid-lock.mdist)
+    if(ext_close_loss && lock.sell_profit < 0)
+    if(lock.buy_profit < 0 && lock.buy_profit < lock.sell_profit)
+    if(lock.sell_price < lock.lfrac-lock.medial && lock.lfrac < Bid-lock.mdist)
         lock.close_order("SELL");
-    if(lock.sell_profit == 0 && lock.sell_price < lock.lfrac-lock.medial)
-        lock.close_order("SELL");
+    if(lock.orders_sell == 0 && lock.orders_sell_stop > 0)
+        if(lock.lfrac < Bid-lock.medial && lock.sell_price < lock.lfrac-lock.medial)
+            lock.close_order("SELL");
 }
 
 void open_order() {
     lock.get_orders();
-    if(lock.orders_buy+lock.orders_buy_stop < lock.orders_sell+lock.orders_sell_stop || lock.orders_all == 0)
-        if(Ask < lock.ufrac)
-            if(lock.open_order("BUY", lock.ufrac))
-        if(Bid > lock.ufrac)
-            if(lock.open_order("BUY", Ask+lock.mdist))
-            lock.get_orders();
-    if(lock.orders_buy+lock.orders_buy_stop > lock.orders_sell+lock.orders_sell_stop || lock.orders_all == 0)
-        if(Bid > lock.lfrac) 
-            if(lock.open_order("SELL", lock.lfrac))
-        if(Ask < lock.lfrac) 
-            if(lock.open_order("SELL", Bid-lock.mdist))
-            lock.get_orders();
+    if(lock.orders_buy+lock.orders_buy_stop < lock.orders_sell+lock.orders_sell_stop || lock.orders_all == 0) {
+        if(lock.ufrac > Ask+lock.mdist)
+            if(lock.open_order("BUY", lock.ufrac+lock.mdist))
+                lock.get_orders();
+        if(lock.ufrac < Ask+lock.mdist)
+            if(lock.open_order("BUY", Ask+lock.medial))
+                lock.get_orders();
+    }
+    if(lock.orders_buy+lock.orders_buy_stop > lock.orders_sell+lock.orders_sell_stop || lock.orders_all == 0) {
+        if(lock.lfrac < Bid-lock.mdist) 
+            if(lock.open_order("SELL", lock.lfrac-lock.mdist))
+                lock.get_orders();
+        if(lock.lfrac > Bid-lock.mdist) 
+            if(lock.open_order("SELL", Bid-lock.medial))
+                lock.get_orders();
+    }
 }
 
 void my_comment() {
     Comment("Time: ",TimeToStr(TimeCurrent(), TIME_DATE), " ", TimeToStr(TimeCurrent(), TIME_SECONDS),
         "\nmagik: ",ext_magik," lot: ",ext_lot," depth: ",ext_depth," period: ",ext_period,
         "\ntick: ",ext_tick," close_loss: ",ext_close_loss," close_profit: ",ext_close_profit,
-        "\nmdist: ",lock.mdist," medial: ",lock.medial);
+        "\nb/s: ",lock.orders_buy+lock.orders_buy_stop,"/",lock.orders_sell+lock.orders_sell_stop,
+        " uf/lf: ",lock.ufrac,"/",lock.lfrac," md/med: ",lock.mdist,"/",lock.medial);
     int err = GetLastError();
     if(err) Print("ERROR! Return code: ", err, " https://docs.mql4.com/constants/errorswarnings/enum_trade_return_codes");
 
-    }
+}
+
+void my_err_zero() {
+    Print("ERROR! zero: mdist=",lock.mdist," ufrac=",lock.ufrac," lfrac=",lock.lfrac);
+}
