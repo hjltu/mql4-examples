@@ -1,2 +1,2 @@
 # mql4-scripts
-My pack of scripts for Metatrader 4
+My examples of scripts and expert advisors for Metatrader 4
