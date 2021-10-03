@@ -11,26 +11,31 @@
                         "   magik: magik number(11)\n"
                         "   lot: order's volume(0.01)\n"
                         "   tick: Exec by tick or by timer(true)\n"
-                        "   close_loss: Close orders with loss(true)\n"
+                        "   close_stop: Close stop orders(false)\n"
+                        "   close_loss: Close orders with loss(false)\n"
                         "   close_profit: Close orders with profit(false)\n"
+                        "   modify_order: Add stoploss to open order(false)\n"
                         "   period: timeframe, minutes(60)\n"
-                        "   depth: number of the candles to find medial(22)"
+                        "   depth: number of the candles to find medial(33)\n"
+                        "   pause: timer pause, sec(66)"
 int             ext_magik = 11;
 extern double   ext_lot = 0.01;
 extern bool     ext_tick = true;
-extern bool     ext_close_loss = false;
+extern bool     ext_close_stop = false;
+extern bool     ext_close_loss = true;
 extern bool     ext_close_profit = false;
-extern string   ext_period = (string)PERIOD_H1;
+extern string   ext_period = (string)PERIOD_M15;
+extern int      ext_mdist = 2;
 extern int      ext_depth = 33;
+extern int      ext_timer_pause = 66;
 class Lock {
-    private:
-        int magik;
-        double lot,depth;
-        string period;
     public:
+        int magik,depth, sell_ticket, buy_ticket;
+        double lot;
+        string period;
         double medial,mdist,ufrac,lfrac;
-        double buy_price, buy_profit, buy_max_loss;
-        double sell_price, sell_profit, sell_max_loss;
+        double buy_price, buy_profit, buy_stoploss;
+        double sell_price, sell_profit, sell_stoploss;
         int orders_all, orders_buy, orders_sell, orders_buy_stop, orders_sell_stop;
 
     bool get_medial() {
@@ -43,15 +48,19 @@ class Lock {
                 lfrac = iFractals(Symbol(), (int)period, MODE_LOWER, i);
             _sum += iHigh(Symbol(), (int)period, i) - iLow(Symbol(), (int)period, i);
         }
+        mdist = MathAbs(NormalizeDouble(MarketInfo(Symbol(), MODE_SPREAD)*Point*ext_mdist, Digits));
         medial = MathAbs(NormalizeDouble(_sum/depth, Digits));
-        if(medial > 0 && ufrac > 0 && lfrac > 0)
+        if(medial < mdist/ext_mdist)
+            return false;
+        if(mdist > 0 && medial > 0 && ufrac > 0 && lfrac > 0)
             return true;
         return false;
     }
 
     bool get_orders() {
         RefreshRates();
-        orders_all=0;orders_sell=0;orders_buy=0;orders_buy_stop=0;orders_sell_stop=0;
+        orders_all=0;orders_sell=0;orders_buy=0;
+        orders_buy_stop=0;orders_sell_stop=0;
         for(int i=0; i<OrdersTotal(); i++)
         if(OrderSelect(i, SELECT_BY_POS, MODE_TRADES) == true)
         if(OrderSymbol() == Symbol() && OrderMagicNumber() == magik) {
@@ -60,25 +69,27 @@ class Lock {
                 orders_buy++;
                 buy_price = OrderOpenPrice();
                 buy_profit=OrderProfit();
-                if(OrderProfit() < buy_max_loss)
-                    buy_max_loss=OrderProfit();
+                buy_stoploss=OrderStopLoss();
+                buy_ticket=OrderTicket();
             }
             if(OrderType() == OP_BUYSTOP) {
                 orders_buy_stop++;
                 buy_price = OrderOpenPrice();
-                buy_profit=0; buy_max_loss=0;
+                buy_ticket=OrderTicket();
+                buy_profit=0; buy_stoploss=0;
             }
             if(OrderType() == OP_SELL) {
                 orders_sell++;
                 sell_price = OrderOpenPrice();
                 sell_profit=OrderProfit();
-                if(OrderProfit() < sell_max_loss)
-                    sell_max_loss=OrderProfit();
+                sell_stoploss=OrderStopLoss();
+                sell_ticket=OrderTicket();
             }
             if(OrderType() == OP_SELLSTOP) {
                 orders_sell_stop++;
                 sell_price = OrderOpenPrice();
-                sell_profit=0; sell_max_loss=0;
+                sell_ticket=OrderTicket();
+                sell_profit=0; sell_stoploss=0;
             }
         }
     return true;
@@ -91,6 +102,12 @@ class Lock {
         if(operation == "SELL")
             if(OrderSend(Symbol(), OP_SELLSTOP, lot, price, 6, 0, 0, " ", magik))
                 {Sleep(999); return true;}
+        return false;
+    }
+
+    bool modify_order(int ticket, double price, double stoploss) {
+        if(OrderModify(ticket, price, stoploss, 0, NULL))
+            {Sleep(999); return true;}
         return false;
     }
 
@@ -118,23 +135,22 @@ class Lock {
         return false;
     }
 
-    Lock(double my_lot, int my_depth, string my_period, int my_magik) {
-        lot=my_lot;depth=my_depth;period=my_period;magik=my_magik;
-        Print("Lock init: ", get_medial()," ",get_orders());
-        mdist = MarketInfo(Symbol(), MODE_SPREAD)*Point;
-
-    }
+    Lock() {}
 };
 
-Lock lock(ext_lot, ext_depth, ext_period, ext_magik);
+Lock lock();
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
   {
 //--- create timer
-    EventSetTimer(33);
+    EventSetTimer(ext_timer_pause);
     my_comment();
+    lock.lot = ext_lot;
+    lock.depth = ext_depth;
+    lock.period = ext_period;
+    lock.magik = ext_magik;
 //---
    return(INIT_SUCCEEDED);
   }
@@ -152,30 +168,16 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-    if(ext_tick) {
-        my_comment();
-        if(lock.get_medial() && lock.get_orders()) {
-            close_order();
-            open_order();
-        }
-        else my_err_zero();
-    }
+    if(ext_tick)
+        my_run();
 }
 //+------------------------------------------------------------------+
 //| Timer function                                                   |
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-    if(ext_tick==false) {
-        //Print("timer");
-        my_comment();
-        if(lock.get_medial() && lock.get_orders()) {
-            close_order();
-            open_order();
-        }
-        else my_err_zero();
-    }
-    return;
+    if(ext_tick==false)
+        my_run();;
 }
 //+------------------------------------------------------------------+
 //| Tester function                                                  |
@@ -192,62 +194,72 @@ double OnTester()
     return(ret);
   }
 //+------------------------------------------------------------------+
+void my_run() {
+    my_comment();
+    if(lock.get_medial() && lock.get_orders()) {
+        close_order();
+        open_order();
+    }
+    else {my_err(); Sleep(ext_timer_pause*1000);}
+}
+
 void close_order() {
     lock.get_orders();
-    if(ext_close_profit && lock.buy_profit > 0)
-    if(lock.buy_price < lock.ufrac-lock.medial && lock.ufrac > Ask+lock.mdist)
+    if(ext_close_profit && lock.buy_profit > 1 && lock.ufrac > Ask+lock.mdist)
         lock.close_order("BUY");
-    if(ext_close_loss && lock.buy_profit < 0)
+    //if(ext_close_loss && lock.buy_profit < 0 && lock.ufrac > Ask+lock.mdist)
+    if(ext_close_loss && lock.buy_profit < 0 && lock.buy_price > Ask+lock.mdist)
     if(lock.sell_profit < 0 && lock.buy_profit > lock.sell_profit)
-    if(lock.buy_price > lock.ufrac+lock.medial && lock.ufrac > Ask+lock.mdist)
         lock.close_order("BUY");
-    if(lock.orders_buy == 0 && lock.orders_buy_stop > 0)
-        if(lock.ufrac > Ask+lock.medial && lock.buy_price > lock.ufrac+lock.medial)
+    lock.get_orders();
+    if(ext_close_stop && lock.orders_buy == 0 && lock.orders_buy_stop > 0)
+        if(lock.ufrac > Ask+lock.mdist && lock.buy_price > lock.ufrac+lock.medial)
             lock.close_order("BUY");
     lock.get_orders();
-    if(ext_close_profit && lock.sell_profit > 0)
-    if(lock.sell_price > lock.lfrac+lock.medial && lock.lfrac < Bid-lock.mdist)
+    if(ext_close_profit && lock.sell_profit > 1 && lock.lfrac < Bid-lock.mdist)
         lock.close_order("SELL");
-    if(ext_close_loss && lock.sell_profit < 0)
+    //if(ext_close_loss && lock.sell_profit < 0 && lock.lfrac < Bid-lock.mdist)
+    if(ext_close_loss && lock.sell_profit < 0 && lock.sell_price < Bid-lock.mdist)
     if(lock.buy_profit < 0 && lock.buy_profit < lock.sell_profit)
-    if(lock.sell_price < lock.lfrac-lock.medial && lock.lfrac < Bid-lock.mdist)
         lock.close_order("SELL");
-    if(lock.orders_sell == 0 && lock.orders_sell_stop > 0)
-        if(lock.lfrac < Bid-lock.medial && lock.sell_price < lock.lfrac-lock.medial)
+    lock.get_orders();
+    if(ext_close_stop && lock.orders_sell == 0 && lock.orders_sell_stop > 0)
+        if(lock.lfrac < Bid-lock.mdist && lock.sell_price < lock.lfrac-lock.medial)
             lock.close_order("SELL");
 }
 
 void open_order() {
     lock.get_orders();
-    if(lock.orders_buy+lock.orders_buy_stop < lock.orders_sell+lock.orders_sell_stop || lock.orders_all == 0) {
-        if(lock.ufrac > Ask+lock.mdist)
-            if(lock.open_order("BUY", lock.ufrac+lock.mdist))
-                lock.get_orders();
-        if(lock.ufrac < Ask+lock.mdist)
-            if(lock.open_order("BUY", Ask+lock.medial))
-                lock.get_orders();
+    if(lock.orders_buy+lock.orders_buy_stop == 0) {
+        //if(lock.ufrac > Ask+lock.mdist)
+            //lock.open_order("BUY", lock.ufrac+lock.mdist);
+        //if(lock.ufrac < Ask+lock.mdist)
+            //lock.open_order("BUY", Ask+lock.medial);
+            lock.open_order("BUY", Ask+lock.mdist);
     }
-    if(lock.orders_buy+lock.orders_buy_stop > lock.orders_sell+lock.orders_sell_stop || lock.orders_all == 0) {
-        if(lock.lfrac < Bid-lock.mdist) 
-            if(lock.open_order("SELL", lock.lfrac-lock.mdist))
-                lock.get_orders();
-        if(lock.lfrac > Bid-lock.mdist) 
-            if(lock.open_order("SELL", Bid-lock.medial))
-                lock.get_orders();
+    lock.get_orders();
+    if(lock.orders_sell+lock.orders_sell_stop == 0) {
+        //if(lock.lfrac < Bid-lock.mdist)
+            //lock.open_order("SELL", lock.lfrac-lock.mdist);
+        //if(lock.lfrac > Bid-lock.mdist) 
+            //lock.open_order("SELL", Bid-lock.medial);
+            lock.open_order("SELL", Bid-lock.mdist);
     }
 }
 
 void my_comment() {
     Comment("Time: ",TimeToStr(TimeCurrent(), TIME_DATE), " ", TimeToStr(TimeCurrent(), TIME_SECONDS),
-        "\nmagik: ",ext_magik," lot: ",ext_lot," depth: ",ext_depth," period: ",ext_period,
-        "\ntick: ",ext_tick," close_loss: ",ext_close_loss," close_profit: ",ext_close_profit,
+        "\nmagik: ",ext_magik," lot: ",lock.lot," depth/period: ",lock.depth,"/",lock.period," pause: ",ext_timer_pause,
         "\nb/s: ",lock.orders_buy+lock.orders_buy_stop,"/",lock.orders_sell+lock.orders_sell_stop,
-        " uf/lf: ",lock.ufrac,"/",lock.lfrac," md/med: ",lock.mdist,"/",lock.medial);
+        " uf/lf: ",lock.ufrac,"/",lock.lfrac,
+        " md/me: ",lock.mdist,"/",lock.medial,
+        "\ntick:           ",ext_tick,"\nclose_stop:  ",ext_close_stop,
+        "\nclose_loss:   ",ext_close_loss,"\nclose_profit: ",ext_close_profit);
     int err = GetLastError();
     if(err) Print("ERROR! Return code: ", err, " https://docs.mql4.com/constants/errorswarnings/enum_trade_return_codes");
 
 }
 
-void my_err_zero() {
-    Print("ERROR! zero: mdist=",lock.mdist," ufrac=",lock.ufrac," lfrac=",lock.lfrac);
+void my_err() {
+    Print("ERROR! my: mdist=",lock.mdist," medial=",lock.medial," ufrac=",lock.ufrac," lfrac=",lock.lfrac, " sleep=",ext_timer_pause);
 }
