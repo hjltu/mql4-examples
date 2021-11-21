@@ -15,22 +15,22 @@
                         "   close_loss: Close orders with loss(false)\n"
                         "   close_profit: Close orders with profit(false)\n"
                         "   modify_order: Add stoploss to open order(false)\n"
-                        "   period: timeframe, minutes(60)\n"
+                        "   period: timeframe, minutes(60,240,1440)\n"
                         "   depth: number of the candles to find medial(33)\n"
                         "   pause: timer pause, sec(66)"
 int             ext_magik = 11;
 extern double   ext_lot = 0.01;
 extern bool     ext_tick = true;
-extern bool     ext_close_stop = false;
-extern bool     ext_close_loss = true;
-extern bool     ext_close_profit = false;
-extern string   ext_period = (string)PERIOD_M15;
-extern int      ext_mdist = 2;
-extern int      ext_depth = 33;
-extern int      ext_timer_pause = 66;
+extern bool     ext_close_loss = false;
+extern string   ext_period = (string)PERIOD_H1;
+
+int     fix_medial = 3;
+int     candles_depth=33;
+int     timer_pause=66;
+
 class Lock {
     public:
-        int magik,depth, sell_ticket, buy_ticket;
+        int magik, sell_ticket, buy_ticket;
         double lot;
         string period;
         double medial,mdist,ufrac,lfrac;
@@ -41,17 +41,17 @@ class Lock {
     bool get_medial() {
         RefreshRates();
         double _sum=0;medial=0;ufrac=0;lfrac=0;
-        for(int i=0; i<depth; i++) {
+        for(int i=0; i<candles_depth; i++) {
             if(ufrac == 0)
                 ufrac = iFractals(Symbol(), (int)period, MODE_UPPER, i);
             if(lfrac == 0)
                 lfrac = iFractals(Symbol(), (int)period, MODE_LOWER, i);
             _sum += iHigh(Symbol(), (int)period, i) - iLow(Symbol(), (int)period, i);
         }
-        mdist = MathAbs(NormalizeDouble(MarketInfo(Symbol(), MODE_SPREAD)*Point*ext_mdist, Digits));
-        medial = MathAbs(NormalizeDouble(_sum/depth, Digits));
-        if(medial < mdist/ext_mdist)
-            return false;
+        mdist = MathAbs(NormalizeDouble(MarketInfo(Symbol(), MODE_SPREAD)*Point, Digits));
+        medial = MathAbs(NormalizeDouble(_sum/candles_depth, Digits));
+        if(medial < mdist*fix_medial)
+            medial=mdist*fix_medial;
         if(mdist > 0 && medial > 0 && ufrac > 0 && lfrac > 0)
             return true;
         return false;
@@ -145,10 +145,9 @@ Lock lock();
 int OnInit()
   {
 //--- create timer
-    EventSetTimer(ext_timer_pause);
+    EventSetTimer(timer_pause);
     my_comment();
     lock.lot = ext_lot;
-    lock.depth = ext_depth;
     lock.period = ext_period;
     lock.magik = ext_magik;
 //---
@@ -200,66 +199,43 @@ void my_run() {
         close_order();
         open_order();
     }
-    else {my_err(); Sleep(ext_timer_pause*1000);}
+    else {my_err(); Sleep(timer_pause*1000);}
 }
 
 void close_order() {
     lock.get_orders();
-    if(ext_close_profit && lock.buy_profit > 1 && lock.ufrac > Ask+lock.mdist)
-        lock.close_order("BUY");
-    //if(ext_close_loss && lock.buy_profit < 0 && lock.ufrac > Ask+lock.mdist)
-    if(ext_close_loss && lock.buy_profit < 0 && lock.buy_price > Ask+lock.mdist)
-    if(lock.sell_profit < 0 && lock.buy_profit > lock.sell_profit)
+    if(ext_close_loss && lock.buy_profit < 0 && lock.buy_price > Ask+lock.medial)
         lock.close_order("BUY");
     lock.get_orders();
-    if(ext_close_stop && lock.orders_buy == 0 && lock.orders_buy_stop > 0)
-        if(lock.ufrac > Ask+lock.mdist && lock.buy_price > lock.ufrac+lock.medial)
-            lock.close_order("BUY");
     lock.get_orders();
-    if(ext_close_profit && lock.sell_profit > 1 && lock.lfrac < Bid-lock.mdist)
-        lock.close_order("SELL");
-    //if(ext_close_loss && lock.sell_profit < 0 && lock.lfrac < Bid-lock.mdist)
-    if(ext_close_loss && lock.sell_profit < 0 && lock.sell_price < Bid-lock.mdist)
-    if(lock.buy_profit < 0 && lock.buy_profit < lock.sell_profit)
+    if(ext_close_loss && lock.sell_profit < 0 && lock.sell_price < Bid-lock.medial)
         lock.close_order("SELL");
     lock.get_orders();
-    if(ext_close_stop && lock.orders_sell == 0 && lock.orders_sell_stop > 0)
-        if(lock.lfrac < Bid-lock.mdist && lock.sell_price < lock.lfrac-lock.medial)
-            lock.close_order("SELL");
 }
 
 void open_order() {
     lock.get_orders();
     if(lock.orders_buy+lock.orders_buy_stop == 0) {
-        //if(lock.ufrac > Ask+lock.mdist)
-            //lock.open_order("BUY", lock.ufrac+lock.mdist);
-        //if(lock.ufrac < Ask+lock.mdist)
-            //lock.open_order("BUY", Ask+lock.medial);
-            lock.open_order("BUY", Ask+lock.mdist);
+        lock.open_order("BUY", Ask+lock.medial);
     }
     lock.get_orders();
     if(lock.orders_sell+lock.orders_sell_stop == 0) {
-        //if(lock.lfrac < Bid-lock.mdist)
-            //lock.open_order("SELL", lock.lfrac-lock.mdist);
-        //if(lock.lfrac > Bid-lock.mdist) 
-            //lock.open_order("SELL", Bid-lock.medial);
-            lock.open_order("SELL", Bid-lock.mdist);
+        lock.open_order("SELL", Bid-lock.medial);
     }
 }
 
 void my_comment() {
     Comment("Time: ",TimeToStr(TimeCurrent(), TIME_DATE), " ", TimeToStr(TimeCurrent(), TIME_SECONDS),
-        "\nmagik: ",ext_magik," lot: ",lock.lot," depth/period: ",lock.depth,"/",lock.period," pause: ",ext_timer_pause,
+        "\nmagik: ",ext_magik," lot: ",lock.lot," per/dep/ps: ",lock.period,"/",candles_depth,"/",timer_pause,
         "\nb/s: ",lock.orders_buy+lock.orders_buy_stop,"/",lock.orders_sell+lock.orders_sell_stop,
-        " uf/lf: ",lock.ufrac,"/",lock.lfrac,
         " md/me: ",lock.mdist,"/",lock.medial,
-        "\ntick:           ",ext_tick,"\nclose_stop:  ",ext_close_stop,
-        "\nclose_loss:   ",ext_close_loss,"\nclose_profit: ",ext_close_profit);
+        "\ntick:           ",ext_tick,
+        "\nclose_loss:   ",ext_close_loss);
     int err = GetLastError();
     if(err) Print("ERROR! Return code: ", err, " https://docs.mql4.com/constants/errorswarnings/enum_trade_return_codes");
 
 }
 
 void my_err() {
-    Print("ERROR! my: mdist=",lock.mdist," medial=",lock.medial," ufrac=",lock.ufrac," lfrac=",lock.lfrac, " sleep=",ext_timer_pause);
+    Print("ERROR! my: mdist=",lock.mdist," medial=",lock.medial," ufrac=",lock.ufrac," lfrac=",lock.lfrac, " sleep=",timer_pause);
 }
