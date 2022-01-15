@@ -22,6 +22,7 @@ int             ext_magik = 11;
 extern double   ext_lot = 0.01;
 extern bool     ext_tick = true;
 extern bool     ext_close_stop = false;
+extern bool     ext_close_loss = false;
 extern int      ext_profit = 0;
 extern string   ext_period = (string)PERIOD_H1;
 
@@ -90,13 +91,12 @@ class Lock {
         }
     return true;
     }
-
-    bool open_order(string operation, double price) {
+    bool open_order(string operation, double price, double stoploss) {
         if(operation == "BUYSTOP")
-            if(OrderSend(Symbol(), OP_BUYSTOP, lot, price, 6, 0, 0, " ", magik))
+            if(OrderSend(Symbol(), OP_BUYSTOP, lot, price, 6, stoploss, 0, " ", magik))
                 {Sleep(999); return true;}
         if(operation == "SELLSTOP")
-            if(OrderSend(Symbol(), OP_SELLSTOP, lot, price, 6, 0, 0, " ", magik))
+            if(OrderSend(Symbol(), OP_SELLSTOP, lot, price, 6, stoploss, 0, " ", magik))
                 {Sleep(999); return true;}
         return false;
     }
@@ -124,7 +124,7 @@ class Lock {
                 if(OrderType() == OP_SELL)
                     if(OrderClose(OrderTicket(),OrderLots(),MarketInfo(Symbol(), MODE_ASK), 50, 0))
                         {Sleep(999); return true;}
-            if(operation == "SELL")
+            if(operation == "SELLSTOP")
                 if(OrderType() == OP_SELLSTOP)
                     if(OrderDelete(OrderTicket()))
                         {Sleep(999); return true;}
@@ -198,12 +198,15 @@ void my_run() {
             close_stop_order();
         if(ext_profit)
             close_profit_order();
+        if(ext_close_loss)
+            close_loss_order();
         open_order();
     }
     else {my_err(); Sleep(timer_pause*1000);}
 }
 
 void close_stop_order() {
+    //Print("close_stop_order");
     lock.get_orders();
     if(lock.orders_buy_stop && lock.buy_price > Ask+lock.medial)
         lock.close_order("BUYSTOP");
@@ -213,6 +216,7 @@ void close_stop_order() {
 }
 
 void close_profit_order() {
+    //Print("close_profit_order");
     lock.get_orders();
     if(lock.buy_profit > ext_profit)
         lock.close_order("BUY");
@@ -221,24 +225,36 @@ void close_profit_order() {
         lock.close_order("SELL");
 }
 
+void close_loss_order() {
+    //Print("close_loss_order");
+    lock.get_orders();
+    if(lock.buy_price > Ask+lock.medial)
+        lock.close_order("BUY");
+    lock.get_orders();
+    if(lock.sell_price < Bid-lock.medial)
+        lock.close_order("SELL");
+}
+
 void open_order() {
     lock.get_orders();
     if(lock.orders_buy+lock.orders_buy_stop == 0) {
-        lock.open_order("BUYSTOP", Ask+lock.medial);
+        lock.open_order("BUYSTOP", Ask+lock.medial, 0);
     }
     lock.get_orders();
     if(lock.orders_sell+lock.orders_sell_stop == 0) {
-        lock.open_order("SELLSTOP", Bid-lock.medial);
+        lock.open_order("SELLSTOP", Bid-lock.medial, 0);
     }
 }
 
 void my_comment() {
     Comment("Time: ",TimeToStr(TimeCurrent(), TIME_DATE), " ", TimeToStr(TimeCurrent(), TIME_SECONDS),
-        "\nmagik/lot: ",ext_magik,"/",lock.lot," per/fix/dep/ps: ",lock.period,"/",fix_mdist,"/",candles_depth,"/",timer_pause,
+        "\nmagik/lot: ",ext_magik,"/",lock.lot," per/fix/dep/ps: ",
+        lock.period,"/",fix_mdist,"/",candles_depth,"/",timer_pause,
         "\nb/s: ",lock.orders_buy+lock.orders_buy_stop,"/",lock.orders_sell+lock.orders_sell_stop,
-        " md/me: ",lock.mdist,"/",lock.medial,
+        " md/me: ",StringFormat("%.4f",lock.mdist),"/",StringFormat("%.4f",lock.medial),
         "\ntick: ",ext_tick,
         "\nstop: ",ext_close_stop,
+        "\nloss: ",ext_close_loss,
         "\nprof: ",ext_profit);
     int err = GetLastError();
     if(err) Print("ERROR! Return code: ", err, " https://docs.mql4.com/constants/errorswarnings/enum_trade_return_codes");
