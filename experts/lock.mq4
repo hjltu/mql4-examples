@@ -25,14 +25,18 @@ extern bool     ext_close_stop = false;
 extern bool     ext_close_loss = false;
 extern int      ext_profit = 0;
 extern string   ext_period = (string)PERIOD_H1;
+extern int      ext_volume_time = 5;
+extern double   ext_fix_medial = 1.0;
 
+string   volume_per = (string)PERIOD_H1;
 int     fix_mdist = 3;
-int     candles_depth=33;
+double  fix_avr = 1.5;
+int     candles_depth=55;
 int     timer_pause=66;
 
 class Lock {
     public:
-        int magik, sell_ticket, buy_ticket;
+        int magik, sell_ticket, buy_ticket, volume, volume_avr, volume_last, volume_curr;
         double lot;
         string period;
         double spread,medial,mdist;
@@ -43,12 +47,23 @@ class Lock {
     bool get_medial() {
         RefreshRates();
         double _sum=0;
+        int vol_count = 0, vol_sum=0, vol_asum=0;
         for(int i=0; i<candles_depth; i++) {
             _sum += iHigh(Symbol(), (int)period, i) - iLow(Symbol(), (int)period, i);
+            vol_asum += (int)iVolume(Symbol(), (int)volume_per, i);
+            string _time = TimeToString(iTime(Symbol(),  (int)volume_per, i), TIME_MINUTES);
+            if(StringToInteger(StringSubstr(_time, 0, 2)) == ext_volume_time) {
+                vol_sum += (int)iVolume(Symbol(), (int)volume_per, i);
+                vol_count++;
+            }
         }
+        volume = vol_sum/vol_count;
+        volume_avr = vol_asum/candles_depth;
+        volume_last = (int)iVolume(Symbol(), (int)volume_per, 1);
+        volume_curr = (int)iVolume(Symbol(), (int)volume_per, 0);
         spread = MathAbs(NormalizeDouble(MarketInfo(Symbol(), MODE_SPREAD)*Point, Digits));
         mdist = MathAbs(NormalizeDouble(spread*fix_mdist, Digits));
-        medial = MathAbs(NormalizeDouble(_sum/candles_depth, Digits));
+        medial = MathAbs(NormalizeDouble(_sum/candles_depth*ext_fix_medial, Digits));
         if(mdist > 0 && medial > 0)
             return true;
         return false;
@@ -194,12 +209,16 @@ double OnTester()
 void my_run() {
     my_comment();
     if(lock.get_medial() && lock.get_orders()) {
-        if(ext_close_stop)
-            close_stop_order();
-        if(ext_profit)
-            close_profit_order();
-        if(ext_close_loss)
-            close_loss_order();
+        //string _time = TimeToStr(TimeCurrent(), TIME_MINUTES);
+        //if(StringToInteger(StringSubstr(_time, 0, 2)) == vol_time) {
+        if(lock.volume_last+lock.volume_curr < lock.volume_avr/fix_avr) {
+            if(ext_close_stop)
+                close_stop_order();
+            if(ext_profit)
+                close_profit_order();
+            if(ext_close_loss)
+                close_loss_order();
+        }
         open_order();
     }
     else {my_err(); Sleep(timer_pause*1000);}
@@ -228,9 +247,13 @@ void close_profit_order() {
 void close_loss_order() {
     //Print("close_loss_order");
     lock.get_orders();
+    if(!lock.orders_buy || !lock.orders_sell)
+        return;
+    if(lock.buy_price-Ask < Bid-lock.sell_price)
     if(lock.buy_price > Ask+lock.medial)
         lock.close_order("BUY");
     lock.get_orders();
+    if(lock.buy_price-Ask > Bid-lock.sell_price)
     if(lock.sell_price < Bid-lock.medial)
         lock.close_order("SELL");
 }
@@ -248,10 +271,13 @@ void open_order() {
 
 void my_comment() {
     Comment("Time: ",TimeToStr(TimeCurrent(), TIME_DATE), " ", TimeToStr(TimeCurrent(), TIME_SECONDS),
-        "\nmagik/lot: ",ext_magik,"/",lock.lot," per/fix/dep/ps: ",
-        lock.period,"/",fix_mdist,"/",candles_depth,"/",timer_pause,
-        "\nb/s: ",lock.orders_buy+lock.orders_buy_stop,"/",lock.orders_sell+lock.orders_sell_stop,
-        " md/me: ",StringFormat("%.4f",lock.mdist),"/",StringFormat("%.4f",lock.medial),
+        " b/s: ",lock.orders_buy+lock.orders_buy_stop,"/",lock.orders_sell+lock.orders_sell_stop,
+        " magik/lot: ",ext_magik,"/",lock.lot,
+        " pr/fx/dp/ps: ", StringFormat("%.0f",(int)lock.period*ext_fix_medial),
+        "/",fix_mdist,"/",candles_depth,"/",timer_pause,
+        "\nmd/me: ",StringFormat("%.4f",lock.mdist),"/",StringFormat("%.4f",lock.medial),
+        " t/v/a/l/c: ", ext_volume_time,"/",lock.volume,"/",lock.volume_avr,"/",
+        lock.volume_last,"/",lock.volume_curr,
         "\ntick: ",ext_tick,
         "\nstop: ",ext_close_stop,
         "\nloss: ",ext_close_loss,
