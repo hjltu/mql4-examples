@@ -23,12 +23,11 @@ extern double   ext_lot = 0.01;
 extern bool     ext_tick = true;
 extern bool     ext_close_stop = false;
 extern bool     ext_close_loss = false;
-extern int      ext_profit = 0;
+extern bool     ext_close_profit = false;
 extern string   ext_period = (string)PERIOD_H1;
-extern int      ext_volume_time = 5;
+extern int      ext_volume_time = 0;
 extern double   ext_fix_medial = 1.0;
 
-string   volume_per = (string)PERIOD_H1;
 int     fix_mdist = 3;
 double  fix_avr = 1.5;
 int     candles_depth=55;
@@ -37,33 +36,35 @@ int     timer_pause=66;
 class Lock {
     public:
         int magik, sell_ticket, buy_ticket, volume, volume_avr, volume_last, volume_curr;
-        double lot;
+        double lot, last_candle_open, last_candle_close, last_candle_depth;
         string period;
-        double spread,medial,mdist;
+        double spread,medial,mdist, day_medial;
         double buy_price, buy_profit, buy_stoploss;
         double sell_price, sell_profit, sell_stoploss;
         int orders_all, orders_buy, orders_sell, orders_buy_stop, orders_sell_stop;
 
     bool get_medial() {
         RefreshRates();
-        double _sum=0;
+        double _sum=0, _dsum=0;
         int vol_count = 0, vol_sum=0, vol_asum=0;
         for(int i=0; i<candles_depth; i++) {
             _sum += iHigh(Symbol(), (int)period, i) - iLow(Symbol(), (int)period, i);
-            vol_asum += (int)iVolume(Symbol(), (int)volume_per, i);
-            string _time = TimeToString(iTime(Symbol(),  (int)volume_per, i), TIME_MINUTES);
+            _dsum += iHigh(Symbol(), (int)period, i) - iLow(Symbol(), PERIOD_D1, i);
+            vol_asum += (int)iVolume(Symbol(), PERIOD_H1, i);
+            string _time = TimeToString(iTime(Symbol(),  PERIOD_H1, i), TIME_MINUTES);
             if(StringToInteger(StringSubstr(_time, 0, 2)) == ext_volume_time) {
-                vol_sum += (int)iVolume(Symbol(), (int)volume_per, i);
+                vol_sum += (int)iVolume(Symbol(), PERIOD_H1, i);
                 vol_count++;
             }
         }
         volume = vol_sum/vol_count;
         volume_avr = vol_asum/candles_depth;
-        volume_last = (int)iVolume(Symbol(), (int)volume_per, 1);
-        volume_curr = (int)iVolume(Symbol(), (int)volume_per, 0);
+        volume_last = (int)iVolume(Symbol(), PERIOD_H1, 1);
+        volume_curr = (int)iVolume(Symbol(), PERIOD_H1, 0);
         spread = MathAbs(NormalizeDouble(MarketInfo(Symbol(), MODE_SPREAD)*Point, Digits));
         mdist = MathAbs(NormalizeDouble(spread*fix_mdist, Digits));
         medial = MathAbs(NormalizeDouble(_sum/candles_depth*ext_fix_medial, Digits));
+        day_medial = MathAbs(NormalizeDouble(_dsum/candles_depth, Digits));
         if(mdist > 0 && medial > 0)
             return true;
         return false;
@@ -104,8 +105,17 @@ class Lock {
                 sell_profit=0; sell_stoploss=0;
             }
         }
-    return true;
+        return true;
     }
+
+    bool get_last_candle() {
+        last_candle_open = iOpen(Symbol(), PERIOD_D1, 1);
+        last_candle_close = iClose(Symbol(), PERIOD_D1, 1);
+        last_candle_open = iOpen(Symbol(), PERIOD_D1, 1);
+        last_candle_depth = iHigh(Symbol(), PERIOD_D1, 1)-iLow(Symbol(), PERIOD_D1, 1);
+        return true;
+    }
+
     bool open_order(string operation, double price, double stoploss) {
         if(operation == "BUYSTOP")
             if(OrderSend(Symbol(), OP_BUYSTOP, lot, price, 6, stoploss, 0, " ", magik))
@@ -209,12 +219,13 @@ double OnTester()
 void my_run() {
     my_comment();
     if(lock.get_medial() && lock.get_orders()) {
-        //string _time = TimeToStr(TimeCurrent(), TIME_MINUTES);
-        //if(StringToInteger(StringSubstr(_time, 0, 2)) == vol_time) {
-        if(lock.volume_last+lock.volume_curr < lock.volume_avr/fix_avr) {
+        string _time = TimeToStr(TimeCurrent(), TIME_MINUTES);
+        if(StringToInteger(StringSubstr(_time, 0, 2)) == ext_volume_time) {
+        //if(lock.volume_last+lock.volume_curr < lock.volume_avr/fix_avr) {
+            lock.get_last_candle();
             if(ext_close_stop)
                 close_stop_order();
-            if(ext_profit)
+            if(ext_close_profit)
                 close_profit_order();
             if(ext_close_loss)
                 close_loss_order();
@@ -227,9 +238,11 @@ void my_run() {
 void close_stop_order() {
     //Print("close_stop_order");
     lock.get_orders();
+    //if(lock.last_candle_open < lock.last_candle_close)
     if(lock.orders_buy_stop && lock.buy_price > Ask+lock.medial)
         lock.close_order("BUYSTOP");
     lock.get_orders();
+    //if(lock.last_candle_open > lock.last_candle_close)
     if(lock.orders_sell_stop && lock.sell_price < Bid-lock.medial)
         lock.close_order("SELLSTOP");
 }
@@ -237,35 +250,43 @@ void close_stop_order() {
 void close_profit_order() {
     //Print("close_profit_order");
     lock.get_orders();
-    if(lock.buy_profit > ext_profit)
+    if(lock.last_candle_open < lock.last_candle_close)
+    if(lock.buy_profit > 0 && lock.buy_price < Ask-lock.medial)
         lock.close_order("BUY");
     lock.get_orders();
-    if(lock.sell_profit > ext_profit)
+    if(lock.last_candle_open > lock.last_candle_close)
+    if(lock.sell_profit > 0 && lock.sell_price > Bid+lock.medial)
         lock.close_order("SELL");
 }
 
 void close_loss_order() {
     //Print("close_loss_order");
     lock.get_orders();
-    if(!lock.orders_buy || !lock.orders_sell)
-        return;
-    if(lock.buy_price-Ask < Bid-lock.sell_price)
-    if(lock.buy_price > Ask+lock.medial)
+    if(lock.last_candle_open < lock.last_candle_close)
+    if(lock.last_candle_depth > lock.day_medial)
+    if(lock.buy_profit < 0)
         lock.close_order("BUY");
     lock.get_orders();
-    if(lock.buy_price-Ask > Bid-lock.sell_price)
-    if(lock.sell_price < Bid-lock.medial)
+    if(lock.last_candle_open > lock.last_candle_close)
+    if(lock.last_candle_depth > lock.day_medial)
+    if(lock.sell_profit < 0)
         lock.close_order("SELL");
 }
 
 void open_order() {
+    string time = TimeToStr(TimeCurrent(), TIME_DATE)+" "+TimeToStr(TimeCurrent(), TIME_MINUTES);
+    string name = "BUYSTOP "+StringSubstr(time, 0, 13);
     lock.get_orders();
     if(lock.orders_buy+lock.orders_buy_stop == 0) {
+        double price = Ask+lock.medial;
         lock.open_order("BUYSTOP", Ask+lock.medial, 0);
+        ObjectCreate(name, OBJ_ARROW_BUY, 0, TimeCurrent(), price);
     }
     lock.get_orders();
     if(lock.orders_sell+lock.orders_sell_stop == 0) {
-        lock.open_order("SELLSTOP", Bid-lock.medial, 0);
+        double price = Bid-lock.medial;
+        lock.open_order("SELLSTOP", price, 0);
+        ObjectCreate(name, OBJ_ARROW_SELL, 0, TimeCurrent(), price);
     }
 }
 
@@ -281,7 +302,7 @@ void my_comment() {
         "\ntick: ",ext_tick,
         "\nstop: ",ext_close_stop,
         "\nloss: ",ext_close_loss,
-        "\nprof: ",ext_profit);
+        "\nprof: ",ext_close_profit);
     int err = GetLastError();
     if(err) Print("ERROR! Return code: ", err, " https://docs.mql4.com/constants/errorswarnings/enum_trade_return_codes");
 
